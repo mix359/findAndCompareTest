@@ -1,0 +1,15 @@
+{
+    "name": "mix/test-find-and-compare",
+    "type": "project",
+    "require": {
+        "ext-dom": "20031129",
+        "ext-curl": "^7.1",
+        "php": "^7.1"
+    },
+    "authors": [
+        {
+            "name": "mix",
+            "email": "mix350@gmail.com"
+        }
+    ]
+}
