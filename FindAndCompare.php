@@ -2,33 +2,168 @@
 
 class FindAndCompare {
 
+	protected const SECONDS_TIME_LIMIT = 23;
+	protected $startTime;
+	protected $jobId;
+	protected $jobStep = '';
+	protected $executedJobStep = '';
+	protected $jobStartTime;
+	protected $firstUrl;
+	protected $secondUrl;
+	protected $firstHomePageUrls = [];
+	protected $secondHomePageUrls = [];
+	protected $firstPageUrls = [];
+	protected $secondPageUrls = [];
+	protected $firstPageCanonical = "";
+	protected $secondPageCanonical = "";
+	protected $mostSimilarUrls = [];
+	protected $similarityCompareIdx = 0;
+	protected $firstHomePageIdx = 0;
+	protected $secondHomePageIdx = 0;
+
+	protected const JOB_DATA_KEYS = ['firstUrl', 'secondUrl', 'firstPageUrls', 'secondPageUrls', 'firstHomePageUrls',
+									 'secondHomePageUrls', 'firstPageCanonical', 'secondPageCanonical', 'mostSimilarUrls',
+									 'similarityCompareIdx', 'firstHomePageIdx', 'secondHomePageIdx'];
+
 	/**
-	 * Execute the find and compare
+	 * FindAndCompare constructor.
+	 * @param $startTime
+	 */
+	public function __construct() {
+		$this->startTime = time();
+		if(defined('DEBUG_FILE')) {
+			if(file_exists(DEBUG_FILE)) {
+				unlink(DEBUG_FILE);
+			}
+			touch(DEBUG_FILE);
+		}
+	}
+
+	/**
+	 * Start the job
 	 *
 	 * @param string $firstUrl
 	 * @param string $secondUrl
 	 * @throws Exception
 	 */
-	public function execute($firstUrl, $secondUrl) {
-		$this->log("start execute");
-		$firstPageUrls = $this->retrieveAllUrlsFromFirstDepthOfPage($firstUrl);
-		$secondPageUrls = $this->retrieveAllUrlsFromFirstDepthOfPage($secondUrl);
-
-		$this->log("looking for similar urls");
-		$mostSimilarUrls = [];
-		foreach ($firstPageUrls as $firstPageUrl) {
-			list($bestSecondPageUrl, $perc) = $this->findMostSimilarUrlForUrl($firstPageUrl, $secondPageUrls);
-			$mostSimilarUrls[] = ['firstPageUrl' => $firstPageUrl, 'secondPageUrl' => $bestSecondPageUrl, 'percent' => round($perc)];
-			unset($bestSecondPageUrl, $perc);
+	public function startJob($firstUrl, $secondUrl) {
+		if(trim($firstUrl) === "" || !filter_var($firstUrl, FILTER_VALIDATE_URL)) {
+			throw new \Exception("Il primo url inviato non sembra essere valido");
 		}
 
-		$this->log("creating the csv");
-		$filename = "url_compare_";
-		$filename .= str_replace(['http://', 'https://', '.', "/"], ['', '', '_', '_'],$firstUrl)."_";
-		$filename .= str_replace(['http://', 'https://', '.', "/"], ['', '', '_', '_'],$secondUrl);
-		$this->createAndDownloadCsvFromArray($mostSimilarUrls, $filename);
+		if(trim($secondUrl) === "" || !filter_var($secondUrl, FILTER_VALIDATE_URL)) {
+			throw new \Exception("Il secondo url inviato non sembra essere valido");
+		}
 
-		$this->log("end execute");
+		$this->jobId = uniqid();
+		$this->jobStartTime = time();
+		$this->executedJobStep = "jobStarting";
+		$this->jobStep = "analyzeFirstUrlHome";
+		$this->firstUrl = trim($firstUrl);
+		$this->secondUrl = trim($secondUrl);
+		$this->redirect();
+	}
+
+	/**
+	 * Load the state of the job and execute it
+	 *
+	 * @param string $jobId
+	 * @throws Exception
+	 */
+	public function execute($jobId) {
+		$this->loadJobState($jobId);
+
+		switch ($this->jobStep) {
+			case "analyzeFirstUrlHome":
+				$this->executedJobStep = "analyzingFirstUrlHome";
+				$this->retrieveUrlsFromHomePage($this->firstUrl, $this->firstHomePageUrls, $this->firstPageCanonical);
+				if(empty($this->firstHomePageUrls)) {
+					throw new \Exception("Non è stato possibile recuperare alcun link dalla pagina {$this->firstUrl}");
+				}
+
+				$this->firstPageUrls = $this->firstHomePageUrls;
+				$this->jobStep = "analyzeFirstUrls";
+				$this->redirect();
+				break;
+
+			case "analyzeFirstUrls":
+				$this->executedJobStep = "analyzingFirstUrls";
+				$firstHomePageUrlsCount = count($this->firstHomePageUrls);
+				while($this->firstHomePageIdx < $firstHomePageUrlsCount) {
+					try {
+						$html = $this->loadHTMLData($this->firstHomePageUrls[$this->firstHomePageIdx]);
+						$this->findAllAnchorUrlsInHtml($html, $this->firstPageCanonical, $this->firstPageUrls);
+						unset($html);
+					} catch (\Exception $e) {}
+					$this->firstHomePageIdx++;
+
+					if(time() > $this->startTime + self::SECONDS_TIME_LIMIT) {
+						$this->redirect();
+					}
+				}
+				$this->jobStep = "analyzeSecondUrlHome";
+				$this->redirect();
+				break;
+
+			case "analyzeSecondUrlHome":
+				$this->executedJobStep = "analyzingSecondUrlHome";
+				$this->retrieveUrlsFromHomePage($this->secondUrl, $this->secondHomePageUrls, $this->secondPageCanonical);
+				if(empty($this->secondHomePageUrls)) {
+					throw new \Exception("Non è stato possibile recuperare alcun link dalla pagina {$this->secondUrl}");
+				}
+
+				$this->secondPageUrls = $this->secondHomePageUrls;
+				$this->jobStep = "analyzeSecondUrls";
+				$this->redirect();
+				break;
+
+			case "analyzeSecondUrls":
+				$this->executedJobStep = "analyzingSecondUrls";
+				$secondHomePageUrlsCount = count($this->secondHomePageUrls);
+				while($this->secondHomePageIdx < $secondHomePageUrlsCount) {
+					try {
+						$html = $this->loadHTMLData($this->secondHomePageUrls[$this->secondHomePageIdx]);
+						$this->findAllAnchorUrlsInHtml($html, $this->secondPageCanonical, $this->secondPageUrls);
+						unset($html);
+					} catch (\Exception $e) {}
+					$this->secondHomePageIdx++;
+
+					if(time() > $this->startTime + self::SECONDS_TIME_LIMIT) {
+						$this->redirect();
+					}
+				}
+				$this->jobStep = "searchSimilarity";
+				$this->redirect();
+				break;
+
+			case "searchSimilarity":
+				$this->executedJobStep = "searchingSimilarity";
+				$firstPageUrlsCount = count($this->firstPageUrls);
+				while($this->similarityCompareIdx < $firstPageUrlsCount) {
+					list($bestSecondPageUrl, $perc) = $this->findMostSimilarUrlForUrl($this->firstPageUrls[$this->similarityCompareIdx], $this->secondPageUrls);
+					$this->mostSimilarUrls[] = ['firstPageUrl' => $this->firstPageUrls[$this->similarityCompareIdx], 'secondPageUrl' => $bestSecondPageUrl, 'percent' => round($perc)];
+					unset($bestSecondPageUrl, $perc);
+
+					$this->similarityCompareIdx++;
+					if(time() > $this->startTime + self::SECONDS_TIME_LIMIT) {
+						$this->redirect();
+					}
+				}
+
+				$this->jobStep = "generateCsv";
+				$this->redirect();
+				break;
+
+			case "generateCsv":
+				$this->log("creating the csv");
+				$this->executedJobStep = "generatingCsv";
+				$filename = "url_compare_";
+				$filename .= str_replace(['http://', 'https://', '.', "/"], ['', '', '_', '_'],$this->firstUrl)."_";
+				$filename .= str_replace(['http://', 'https://', '.', "/"], ['', '', '_', '_'],$this->secondUrl);
+				$this->createAndDownloadCsvFromArray($this->mostSimilarUrls, $filename);
+				unlink("{$jobId}.job");
+				break;
+		}
 	}
 
 	/**
@@ -56,17 +191,14 @@ class FindAndCompare {
 	}
 
 	/**
-	 * Retrieve all the urls present in the first depth pages of the provided url
+	 * Retrive all the links in the homepage url passed
 	 *
-	 * @param string $url
-	 * @return array
+	 * @param $url
+	 * @param $homePageUrls
+	 * @param $canonicalUrl
 	 * @throws Exception
 	 */
-	protected function retrieveAllUrlsFromFirstDepthOfPage($url) {
-		if($url == "" || !filter_var($url, FILTER_VALIDATE_URL)) {
-			throw new \Exception("URL {$url} inviato non valido");
-		}
-
+	protected function retrieveUrlsFromHomePage($url, &$homePageUrls, &$canonicalUrl) {
 		$this->log("retrive {$url}");
 		$html = $this->loadHTMLData($url);
 		$this->log("-find canonical");
@@ -74,21 +206,6 @@ class FindAndCompare {
 		$canonicalUrl = $this->findCanonicalUrlOfHtml($html, $url);
 		$this->log("-find links");
 		$this->findAllAnchorUrlsInHtml($html, $canonicalUrl, $homePageUrls);
-		unset($html);
-
-		$this->log("-loading and searching in ".count($homePageUrls)." urls");
-		$homeAndFirstDepthUrls = $homePageUrls;
-		foreach ($homePageUrls as $homePageUrl) {
-			try {
-				$html = $this->loadHTMLData($homePageUrl);
-				$this->findAllAnchorUrlsInHtml($html, $canonicalUrl, $homeAndFirstDepthUrls);
-			} catch (\Exception $e) {}
-			unset($html);
-		}
-
-		$this->log("-found ".count($homeAndFirstDepthUrls)." urls");
-
-		return $homeAndFirstDepthUrls;
 	}
 
 	/**
@@ -195,6 +312,115 @@ class FindAndCompare {
 		fclose($out);
 	}
 
+	/**
+	 * @param $jobId
+	 * @throws Exception
+	 */
+	protected function loadJobState($jobId) {
+		if($jobId === "") {
+			throw new \Exception("Id di lavoro non valido.");
+		}
+
+		$jobStateSerialized = @file_get_contents("{$jobId}.job");
+		if($jobStateSerialized === FALSE) {
+			throw new \Exception("Non è stato possibile leggere il file di lavoro");
+		}
+
+		$jobState = @unserialize($jobStateSerialized);
+		if($jobState === FALSE || !is_array($jobState) || !isset($jobState['step']) || !isset($jobState['startTime']) ) {
+			throw new \Exception("File di lavoro non valido");
+		}
+
+		$this->jobId = $jobId;
+		$this->jobStep = $jobState['step'];
+		$this->jobStartTime = $jobState['startTime'];
+
+		foreach (self::JOB_DATA_KEYS as $key) {
+			if(!isset($jobState[$key])) {
+				throw new \Exception("File di lavoro non valido: chiave mancante {$key}");
+			}
+
+			$this->$key = $jobState[$key];
+		}
+	}
+
+	/**
+	 * Save the local variables in the job file
+	 *
+	 * @throws Exception
+	 */
+	protected function saveJobState() {
+		$jobState = [
+			'step' => $this->jobStep,
+			'startTime' => $this->jobStartTime,
+		];
+
+		foreach (self::JOB_DATA_KEYS as $key) {
+			$jobState[$key] = $this->$key;
+		}
+
+		if(@file_put_contents("{$this->jobId}.job", serialize($jobState)) === FALSE) {
+			throw new \Exception("Non è stato possibile salvare il file di lavoro.");
+		}
+	}
+
+	/**
+	 * Display the current status of the job
+	 */
+	protected function displayJobState() {
+		switch($this->executedJobStep) {
+			case "jobStarting":
+				$stepMessage = "Inizio del processo {$this->jobId} di analisi degli urls {$this->firstUrl} {$this->secondUrl}";
+				break;
+
+			case "analyzingFirstUrlHome":
+				$stepMessage = "Analisi del primo URL";
+				break;
+
+			case "analyzingFirstUrls":
+				$stepMessage = "Analisi degli url di primo livello del primo URL {$this->firstHomePageIdx}/".count($this->firstHomePageUrls);
+				break;
+
+			case "analyzingSecondUrlHome":
+				$stepMessage = "Analisi del secondo URL";
+				break;
+
+			case "analyzingSecondUrls":
+				$stepMessage = "Analisi degli url di primo livello del secondo URL {$this->secondHomePageIdx}/".count($this->secondHomePageUrls);
+				break;
+
+			case "searchingSimilarity":
+				$stepMessage = "Ricerca delle similarità: {$this->similarityCompareIdx}/".count($this->firstPageUrls);
+				break;
+
+			case "generatingCsv":
+				$stepMessage = "Analisi del primo URL";
+				break;
+
+			default:
+				$stepMessage = "";
+		}
+
+		$this->log($stepMessage);
+		$elapsedTime = time() - $this->startTime;
+		$totalElapsedTime = time() - $this->jobStartTime;
+		$protocol = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] != 'off') || $_SERVER['SERVER_PORT'] == 443) ? "https://" : "http://";
+		$redirectUrl = $protocol.$_SERVER['HTTP_HOST'] . $_SERVER['SCRIPT_NAME'] . "?jobId=".$this->jobId;
+
+		include_once "showJobState.php";
+	}
+
+	/**
+	 * Save the job and display the status of the job with the redirect
+	 *
+	 * @throws Exception
+	 */
+	protected function redirect() {
+		$this->saveJobState();
+		$this->displayJobState();
+		die();
+	}
+
 
 	/**
 	 * Log a message into the debug file
@@ -207,7 +433,7 @@ class FindAndCompare {
 			return;
 		}
 
-		file_put_contents(DEBUG_FILE, ($includeTime?date("[H:i:s] "):"").$message.PHP_EOL, FILE_APPEND);
+		@file_put_contents(DEBUG_FILE, ($includeTime?date("[H:i:s] "):"").$message.PHP_EOL, FILE_APPEND);
 	}
 
 }
