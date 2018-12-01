@@ -201,11 +201,11 @@ class FindAndCompare {
 	protected function retrieveUrlsFromHomePage($url, &$homePageUrls, &$canonicalUrl) {
 		$this->log("retrive {$url}");
 		$html = $this->loadHTMLData($url);
-		$this->log("-find canonical");
 		$homePageUrls = [];
 		$canonicalUrl = $this->findCanonicalUrlOfHtml($html, $url);
-		$this->log("-find links");
+		$this->log("-found canonical {$canonicalUrl}");
 		$this->findAllAnchorUrlsInHtml($html, $canonicalUrl, $homePageUrls);
+		$this->log("-found links");
 	}
 
 	/**
@@ -278,7 +278,9 @@ class FindAndCompare {
 		curl_setopt($ch, CURLOPT_URL, $url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
 		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, TRUE);
-		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		//@todo appear as a browser?
 		$html = curl_exec($ch);
 		curl_close($ch);
 
